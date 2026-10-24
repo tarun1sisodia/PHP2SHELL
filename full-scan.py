@@ -48,7 +48,7 @@ def print_banner():
   |  __/|  _  |  __// __/ ___) |  _  | |___| |___| |___
   |_|   |_| |_|_|  |_____|____/|_| |_|_____|_____|_____|
          P H P 2 S H E L L   ·   W O R D P R E S S   S C A N N E R
-    CVE-2026-109618 / CVE-2026-109619  +  WPScan  +  ffuf
+     CVE-2026-109618 / CVE-2026-109619  +  WPScan  +  ffuf
     """
     print(bcolors.OKCYAN + banner + bcolors.ENDC)
 
@@ -202,211 +202,139 @@ def step_c_wpscan(target_url, api_token):
     return True
 
 
-def step_c2_plugins(target_url):
-    """Step C2: readme.txt plugin brute."""
+def step_c2_plugin_brute(target_url):
+    """Step C2: Plugin readme.txt brute force."""
     print(bcolors.OKBLUE + "\n" + "="*60 + bcolors.ENDC)
-    print(bcolors.OKBLUE + "[Step C2] Plugin readme.txt Brute Force" + bcolors.ENDC)
+    print(bcolors.OKBLUE + "[Step C2] Plugin Version Detection" + bcolors.ENDC)
     print(bcolors.OKBLUE + "="*60 + bcolors.ENDC)
     
-    # Common plugins list
+    # Common WordPress plugins
     plugins = [
-        "akismet", "jetpack", "woocommerce", "contact-form-7", "wp-super-cache",
-        "all-in-one-seo-pack", "yoast-seo", "gravity-forms", "elementor", "wpforms",
-        "smush-image-compression", "regenerate-thumbnails", "rank-math-seo",
-        "monsterinsights", "ithemes-security", "updraftplus", "backup-wp",
-        "wp-rocket", "lazy-load", "imagify", "shortpixel-image-optimiser",
-        "complianz-gdpr", "cookie-notice", "classic-editor"
+        "akismet", "all-in-one-seo-pack", "contact-form-7", "elementor",
+        "jetpack", "master-slider", "nextgen-gallery", "ninja-forms",
+        "polylang", "regenerate-thumbnails", "seo-by-rank-math", "slider-wp",
+        "theme-my-login", "updraftplus", "woocommerce", "wp-backup-plus",
+        "wp-db-manager", "wp-super-cache", "wpml", "wpforms", "yoast-seo"
     ]
     
-    print(bcolors.OKCYAN + "\n--- Checking Plugin Versions via readme.txt ---" + bcolors.ENDC)
-    found_plugins = []
+    print(bcolors.OKCYAN + "\n--- Probing Plugin Versions via readme.txt ---" + bcolors.ENDC)
     for plugin in plugins:
-        cmd = f'curl -s "{target_url}/wp-content/plugins/{plugin}/readme.txt" | grep -i "Stable tag:"'
+        readme_url = f"{target_url}/wp-content/plugins/{plugin}/readme.txt"
+        cmd = f'curl -s -o /dev/null -w "%{{http_code}}" "{readme_url}"'
         returncode, stdout, stderr = run_command(cmd)
-        if stdout:
-            version = stdout.strip().replace("Stable tag: ", "").strip()
-            print(f"{plugin} -> {version}")
-            found_plugins.append((plugin, version))
-    
-    if not found_plugins:
-        print("(no plugins found)")
+        if stdout.strip() == "200":
+            cmd = f'curl -s "{readme_url}" | grep -i "stable tag"'
+            returncode, stdout, stderr = run_command(cmd)
+            print(f"{bcolors.OKGREEN}[+] {plugin}: {stdout.strip()}{bcolors.ENDC}")
+        else:
+            print(f"  {plugin} -> {stdout.strip()}")
     
     return True
 
 
-def step_d_fuzzer(target_url):
-    """Step D: Directory/File discovery using ffuf."""
+def step_d_directory_fuzz(target_url):
+    """Step D: Directory/File discovery with ffuf."""
     print(bcolors.OKBLUE + "\n" + "="*60 + bcolors.ENDC)
-    print(bcolors.OKBLUE + "[Step D] Directory/File Discovery (ffuf)" + bcolors.ENDC)
+    print(bcolors.OKBLUE + "[Step D] Directory/File Discovery" + bcolors.ENDC)
     print(bcolors.OKBLUE + "="*60 + bcolors.ENDC)
     
-    # Check if ffuf is available
-    returncode, stdout, stderr = run_command("which ffuf")
-    if returncode != 0:
-        print(bcolors.FAIL + "[-] ffuf not found. Skipping..." + bcolors.ENDC)
-        return False
+    # Get 404 size
+    not_found_size = get_404_size(target_url)
     
-    # Get 404 page size
-    notfound_size = get_404_size(target_url)
+    print(bcolors.OKCYAN + f"\n--- Running ffuf (404 size: {not_found_size} bytes) ---" + bcolors.ENDC)
     
-    # Check wordlist candidates
-    wordlist = None
-    candidates = [
-        "/usr/share/seclists/Discovery/Web-Content/directory-list-2.3-medium.txt",
-        "/usr/share/wordlists/seclists/Discovery/Web-Content/directory-list-2.3-medium.txt",
-        "/usr/share/dirb/wordlists/common.txt"
-    ]
-    for c in candidates:
-        if os.path.exists(c):
-            wordlist = c
-            break
-            
-    if not wordlist:
-        print(bcolors.WARNING + "[-] No common wordlist found in /usr/share/seclists/ or /usr/share/wordlists/seclists/" + bcolors.ENDC)
-        print(bcolors.WARNING + "[*] Skipping fuzzer..." + bcolors.ENDC)
-        return False
-    
-    print(bcolors.OKCYAN + f"\n--- Running ffuf (wordlist: {wordlist}) ---" + bcolors.ENDC)
     cmd = f'ffuf -u "{target_url}/FUZZ" \\'
-    cmd += f' -w {wordlist} \\'
-    cmd += " -mc 200,301,302,403 \\"
-    cmd += " -e .php,.bak,.old,.zip,.sql \\"
-    cmd += f" -fs {notfound_size} \\"
-    cmd += " -t 20"
-    returncode, stdout, stderr = run_command(cmd, timeout=600)
+    cmd += ' -w /usr/share/seclists/Discovery/Web-Content/directory-list-2.3-medium.txt \\'
+    cmd += ' -mc 200,301,302,403 \\'
+    cmd += ' -e .php,.bak,.old,.zip,.sql \\'
+    cmd += f' -fs {not_found_size} \\'
+    cmd += ' -t 20'
+    
+    returncode, stdout, stderr = run_command(cmd)
     print(stdout if stdout else "(no output)")
     
     return True
 
 
-def step_e_php2shell(target_url, no_safe_mode=False):
+def step_e_php2shell_check(target_url):
     """Step E: PHP2Shell vulnerability check."""
     print(bcolors.OKBLUE + "\n" + "="*60 + bcolors.ENDC)
     print(bcolors.OKBLUE + "[Step E] PHP2Shell Vulnerability Check" + bcolors.ENDC)
     print(bcolors.OKBLUE + "="*60 + bcolors.ENDC)
     
-    script_path = Path(__file__).parent / "php2shell" / "php2shell.py"
+    php2shell_script = Path("php2shell/php2shell.py")
     
-    if not script_path.exists():
-        print(bcolors.FAIL + f"[-] PHP2Shell script not found at {script_path}" + bcolors.ENDC)
+    if not php2shell_script.exists():
+        print(bcolors.WARNING + "[-] php2shell.py not found. Skipping..." + bcolors.ENDC)
         return False
     
-    cmd = f"python3 {script_path}"
-    if no_safe_mode:
-        cmd += " --no-safe-mode"
-    cmd += f" {target_url}"
-    
+    print(bcolors.OKCYAN + "\n--- Running PHP2Shell recon ---" + bcolors.ENDC)
+    cmd = f'python3 php2shell/recon.py "{target_url}" --json'
     returncode, stdout, stderr = run_command(cmd)
+    print(stdout if stdout else "(no output)")
     
-    if returncode == 0:
-        print(bcolors.OKGREEN + "[+] PHP2Shell completed" + bcolors.ENDC)
-        print(stdout)
-        return True
-    else:
-        print(bcolors.FAIL + f"[-] PHP2Shell failed with code {returncode}" + bcolors.ENDC)
-        if stderr:
-            print(stderr)
-        return False
+    return True
 
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Complete WordPress Security Scanner - Steps A-E",
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog="""
-Examples:
-  python3 full-scan.py https://example.com/blog/
-  python3 full-scan.py https://example.com/blog/ --no-safe-mode
-  python3 full-scan.py https://example.com/blog/ --skip-step-a
-        """
+        description="Full WordPress Security Scanner (Steps A-E)"
     )
-    
-    parser.add_argument("url", help="Target URL to scan")
-    parser.add_argument("--no-safe-mode", action="store_true",
-                        help="Enable active recon (version disclosure checks)")
-    parser.add_argument("--skip-step-a", action="store_true", help="Skip Step A (fingerprint)")
-    parser.add_argument("--skip-step-b", action="store_true", help="Skip Step B (PHP probe)")
-    parser.add_argument("--skip-step-c", action="store_true", help="Skip Step C (WPScan)")
-    parser.add_argument("--skip-step-c2", action="store_true", help="Skip Step C2 (plugin brute)")
-    parser.add_argument("--skip-step-d", action="store_true", help="Skip Step D (fuzzer)")
-    parser.add_argument("--skip-step-e", action="store_true", help="Skip Step E (PHP2Shell)")
+    parser.add_argument("url", help="Target URL (e.g., https://example.com/blog/)")
+    parser.add_argument("--token", help="WPScan API token")
+    parser.add_argument("--skip-a", action="store_true", help="Skip Step A")
+    parser.add_argument("--skip-b", action="store_true", help="Skip Step B")
+    parser.add_argument("--skip-c", action="store_true", help="Skip Step C (WPScan)")
+    parser.add_argument("--skip-c2", action="store_true", help="Skip Step C2 (Plugin brute)")
+    parser.add_argument("--skip-d", action="store_true", help="Skip Step D (Directory fuzz)")
+    parser.add_argument("--skip-e", action="store_true", help="Skip Step E (PHP2Shell)")
     
     args = parser.parse_args()
     
-    # Print banner
     print_banner()
     
-    # Validate URL
     parsed = urlparse(args.url)
-    if not parsed.scheme or not parsed.netloc:
-        print(bcolors.FAIL + "[-] Invalid URL. Please provide a valid URL with scheme (http/https)" + bcolors.ENDC)
-        sys.exit(1)
-    
-    # Extract host from URL
     host = parsed.netloc
-    if ":" in host:
-        host = host.split(":")[0]
+    base_path = parsed.path.rstrip('/')
     
-    print(bcolors.OKGREEN + f"[+] Target: {args.url}" + bcolors.ENDC)
-    print(bcolors.OKGREEN + f"[+] Host: {host}" + bcolors.ENDC)
-    print()
+    # Determine target URL (with or without /blog/)
+    target_url = f"{parsed.scheme}://{host}"
+    if base_path:
+        target_url = f"{target_url}{base_path}"
     
-    # Prompt for WPScan token if not skipped
-    api_token = None
-    if not args.skip_step_c:
-        print(bcolors.WARNING + "[*] WPScan requires an API token" + bcolors.ENDC)
-        api_token = getpass.getpass("Enter WPScan API token: ").strip()
-        if not api_token:
-            print(bcolors.FAIL + "[-] API token is required for Step C" + bcolors.ENDC)
-            sys.exit(1)
-        print()
-    
-    # Run steps
-    results = {
-        "target": args.url,
-        "timestamp": datetime.now().isoformat(),
-        "steps": {}
-    }
+    print(bcolors.OKBLUE + f"[*] Target: {target_url}" + bcolors.ENDC)
+    print(bcolors.OKBLUE + f"[*] Host: {host}" + bcolors.ENDC)
     
     # Step A: Fingerprint
-    if not args.skip_step_a:
-        results["steps"]["A"] = step_a_fingerprint(args.url, host)
-        time.sleep(1)
+    if not args.skip_a:
+        step_a_fingerprint(target_url, host)
     
-    # Step B: PHP probe
-    if not args.skip_step_b:
-        results["steps"]["B"] = step_b_php(args.url)
-        time.sleep(1)
+    # Step B: PHP detection
+    if not args.skip_b:
+        step_b_php(target_url)
     
     # Step C: WPScan
-    if not args.skip_step_c and api_token:
-        results["steps"]["C"] = step_c_wpscan(args.url, api_token)
-        time.sleep(1)
+    if not args.skip_c:
+        if args.token:
+            step_c_wpscan(target_url, args.token)
+        else:
+            print(bcolors.WARNING + "[-] WPScan token not provided. Skipping..." + bcolors.ENDC)
     
     # Step C2: Plugin brute
-    if not args.skip_step_c2:
-        results["steps"]["C2"] = step_c2_plugins(args.url)
-        time.sleep(1)
+    if not args.skip_c2:
+        step_c2_plugin_brute(target_url)
     
-    # Step D: Fuzzer
-    if not args.skip_step_d:
-        results["steps"]["D"] = step_d_fuzzer(args.url)
-        time.sleep(1)
+    # Step D: Directory fuzz
+    if not args.skip_d:
+        step_d_directory_fuzz(target_url)
     
-    # Step E: PHP2Shell
-    if not args.skip_step_e:
-        results["steps"]["E"] = step_e_php2shell(args.url, no_safe_mode=args.no_safe_mode)
+    # Step E: PHP2Shell check
+    if not args.skip_e:
+        step_e_php2shell_check(target_url)
     
-    # Summary
-    print(bcolors.OKBLUE + "\n" + "="*60 + bcolors.ENDC)
-    print(bcolors.OKBLUE + "SCAN SUMMARY" + bcolors.ENDC)
-    print(bcolors.OKBLUE + "="*60 + bcolors.ENDC)
-    
-    for step, status in results["steps"].items():
-        status_str = "COMPLETED" if status else "SKIPPED/FAILED"
-        print(f"{bcolors.OKGREEN}[+] Step {step}: {status_str}{bcolors.ENDC}")
-    
-    print()
+    print(bcolors.OKGREEN + "\n" + "="*60 + bcolors.ENDC)
+    print(bcolors.OKGREEN + "Scan complete!" + bcolors.ENDC)
+    print(bcolors.OKGREEN + "="*60 + bcolors.ENDC)
 
 
 if __name__ == "__main__":
