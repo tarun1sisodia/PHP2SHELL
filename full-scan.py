@@ -162,9 +162,15 @@ def step_c_wpscan(target_url, api_token):
     print(bcolors.OKBLUE + "[Step C] WPScan + Plugin Enumeration" + bcolors.ENDC)
     print(bcolors.OKBLUE + "="*60 + bcolors.ENDC)
     
-    script_path = Path("/opt/wpscan/wpscan.rb")
+    wpscan_cmd = None
+    if subprocess.run("which wpscan", shell=True, capture_output=True).returncode == 0:
+        wpscan_cmd = "wpscan"
+    elif Path("/opt/wpscan/wpscan.rb").exists():
+        wpscan_cmd = "ruby /opt/wpscan/wpscan.rb"
+    elif Path("/usr/local/bin/wpscan").exists():
+        wpscan_cmd = "/usr/local/bin/wpscan"
     
-    if not script_path.exists():
+    if not wpscan_cmd:
         print(bcolors.FAIL + "[-] WPScan not found. Skipping..." + bcolors.ENDC)
         return False
     
@@ -172,7 +178,7 @@ def step_c_wpscan(target_url, api_token):
     output_file = f"wpscan_{timestamp}.txt"
     
     print(bcolors.OKCYAN + f"\n--- Running WPScan (output: {output_file}) ---" + bcolors.ENDC)
-    cmd = f'ruby {script_path} --url "{target_url}" --api-token "{api_token}" \\'
+    cmd = f'{wpscan_cmd} --url "{target_url}" --api-token "{api_token}" \\'
     cmd += ' --enumerate vp,vt,u,cb,dbe --plugins-detection aggressive \\'
     cmd += ' --plugins-version-detection aggressive -f cli-no-color -o ' + output_file
     returncode, stdout, stderr = run_command(cmd)
@@ -243,10 +249,20 @@ def step_d_fuzzer(target_url):
     # Get 404 page size
     notfound_size = get_404_size(target_url)
     
-    # Default wordlist
-    wordlist = "/usr/share/seclists/Discovery/Web-Content/directory-list-2.3-medium.txt"
-    if not os.path.exists(wordlist):
-        print(bcolors.WARNING + f"[-] Wordlist not found at {wordlist}" + bcolors.ENDC)
+    # Check wordlist candidates
+    wordlist = None
+    candidates = [
+        "/usr/share/seclists/Discovery/Web-Content/directory-list-2.3-medium.txt",
+        "/usr/share/wordlists/seclists/Discovery/Web-Content/directory-list-2.3-medium.txt",
+        "/usr/share/dirb/wordlists/common.txt"
+    ]
+    for c in candidates:
+        if os.path.exists(c):
+            wordlist = c
+            break
+            
+    if not wordlist:
+        print(bcolors.WARNING + "[-] No common wordlist found in /usr/share/seclists/ or /usr/share/wordlists/seclists/" + bcolors.ENDC)
         print(bcolors.WARNING + "[*] Skipping fuzzer..." + bcolors.ENDC)
         return False
     
