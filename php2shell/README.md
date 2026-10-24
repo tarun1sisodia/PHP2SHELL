@@ -169,6 +169,7 @@ python3 recon.py https://example.com
 ```
 
 Look for:
+r
 - `go: true` - Target is ready for exploitation
 - `go: false` - Precondition check failed (see reason)
 

