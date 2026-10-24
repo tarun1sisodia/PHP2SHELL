@@ -16,8 +16,21 @@ if [ -z "$URL" ]; then
     exit 1
 fi
 
+# Locate WPScan binary
+WPSCAN_CMD=""
+if command -v wpscan &>/dev/null; then
+    WPSCAN_CMD="wpscan"
+elif [ -f "/opt/wpscan/wpscan.rb" ]; then
+    WPSCAN_CMD="ruby /opt/wpscan/wpscan.rb"
+elif [ -f "/usr/local/bin/wpscan" ]; then
+    WPSCAN_CMD="/usr/local/bin/wpscan"
+else
+    echo "Error: WPScan binary not found. Please install wpscan."
+    exit 1
+fi
+
 # Run WPScan with the provided URL and API token
-ruby /opt/wpscan/wpscan.rb --url "$URL" \
+$WPSCAN_CMD --url "$URL" \
     --api-token "$WPSCAN_TOKEN" \
     --enumerate vp,vt,u,cb,dbe \
     --plugins-detection aggressive \
