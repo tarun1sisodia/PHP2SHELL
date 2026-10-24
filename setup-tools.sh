@@ -19,18 +19,22 @@ sudo apt install -y dnsutils
 
 echo ""
 echo "Installing Ruby and dependencies..."
-sudo apt install -y ruby-full zlib1g-dev
+sudo apt install -y ruby-full ruby-bundler zlib1g-dev || sudo apt install -y ruby-full zlib1g-dev
+command -v bundle &> /dev/null || sudo gem install bundler
 
 echo ""
 echo "Installing WPScan..."
-cd /opt
-sudo git clone https://github.com/wpscanteam/wpscan.git
-cd wpscan
-sudo bundle install --without test
-
-echo ""
-echo "Creating symlink for easy access..."
-sudo ln -sf /opt/wpscan/wpscan.rb /usr/local/bin/wpscan
+if [ ! -d "/opt/wpscan" ]; then
+    sudo git clone https://github.com/wpscanteam/wpscan.git /opt/wpscan
+    (
+        cd /opt/wpscan
+        sudo bundle install --without test
+        sudo ln -sf /opt/wpscan/wpscan.rb /usr/local/bin/wpscan
+    )
+    echo "WPScan installed successfully!"
+else
+    echo "WPScan already exists at /opt/wpscan"
+fi
 
 echo ""
 echo "=========================================="

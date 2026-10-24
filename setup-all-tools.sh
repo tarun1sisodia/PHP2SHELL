@@ -8,6 +8,10 @@ echo "Installing WordPress Security Tools"
 echo "=========================================="
 echo ""
 
+# Store repository directory to always return to it
+REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+cd "$REPO_DIR"
+
 # Colors for output
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -27,21 +31,26 @@ sudo apt update
 echo -e "${YELLOW}Installing basic tools (curl, git, dnsutils)...${NC}"
 sudo apt install -y curl git dnsutils
 
-# Install Python and pip
-echo -e "${YELLOW}Installing Python 3 and pip...${NC}"
-sudo apt install -y python3 python3-pip python3-venv
+# Install Python and dependencies
+echo -e "${YELLOW}Installing Python 3 and dependencies...${NC}"
+sudo apt install -y python3 python3-pip python3-venv python3-requests python3-urllib3
 
-# Install Ruby
-echo -e "${YELLOW}Installing Ruby...${NC}"
-sudo apt install -y ruby-full zlib1g-dev
+# Install Ruby and Bundler
+echo -e "${YELLOW}Installing Ruby and Bundler...${NC}"
+sudo apt install -y ruby-full ruby-bundler zlib1g-dev || sudo apt install -y ruby-full zlib1g-dev
+if ! command_exists bundle; then
+    sudo gem install bundler
+fi
 
 # Install WPScan
 echo -e "${YELLOW}Installing WPScan...${NC}"
 if [ ! -d "/opt/wpscan" ]; then
     sudo git clone https://github.com/wpscanteam/wpscan.git /opt/wpscan
-    cd /opt/wpscan
-    sudo bundle install --without test
-    sudo ln -sf /opt/wpscan/wpscan.rb /usr/local/bin/wpscan
+    (
+        cd /opt/wpscan
+        sudo bundle install --without test
+        sudo ln -sf /opt/wpscan/wpscan.rb /usr/local/bin/wpscan
+    )
     echo -e "${GREEN}WPScan installed successfully!${NC}"
 else
     echo -e "${YELLOW}WPScan already exists at /opt/wpscan${NC}"
@@ -52,11 +61,23 @@ echo -e "${YELLOW}Installing ffuf...${NC}"
 if ! command_exists ffuf; then
     FFUF_VERSION="v2.2.0"
     curl -sL "https://github.com/ffuf/ffuf/releases/download/${FFUF_VERSION}/ffuf_${FFUF_VERSION}_linux_amd64.tar.gz" | sudo tar xz -C /usr/local/bin
-    sudo mv /usr/local/bin/ffuf /usr/local/bin/ffuf
+    sudo chmod +x /usr/local/bin/ffuf
     echo -e "${GREEN}ffuf installed successfully!${NC}"
 else
     echo -e "${YELLOW}ffuf already installed${NC}"
 fi
+
+# Install SecLists wordlists
+echo -e "${YELLOW}Installing SecLists...${NC}"
+if [ ! -d "/usr/share/seclists" ]; then
+    sudo git clone --depth 1 https://github.com/danielmiessler/SecLists.git /usr/share/seclists
+    echo -e "${GREEN}SecLists installed successfully!${NC}"
+else
+    echo -e "${YELLOW}SecLists already exists at /usr/share/seclists${NC}"
+fi
+
+# Ensure we are in the repo directory
+cd "$REPO_DIR"
 
 # Install PHP2Shell
 echo -e "${YELLOW}Installing PHP2Shell...${NC}"
