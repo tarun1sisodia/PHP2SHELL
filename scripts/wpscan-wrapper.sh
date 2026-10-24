@@ -1,5 +1,5 @@
 #!/bin/bash
-# wpscan-wrapper.sh - Wrapper script to run WPScan with API token
+# scripts/wpscan-wrapper.sh - Wrapper script to run WPScan with API token
 
 WPSCAN_TOKEN="${WPSCAN_TOKEN:-}"
 
@@ -11,25 +11,23 @@ fi
 
 URL="$1"
 if [ -z "$URL" ]; then
-    echo "Usage: $0 <url>"
+    echo "Usage: $0 <url> [options]"
     echo "Example: $0 https://example.com/blog/"
     exit 1
 fi
 
-# Locate WPScan binary
 WPSCAN_CMD=""
 if command -v wpscan &>/dev/null; then
     WPSCAN_CMD="wpscan"
-elif [ -f "/opt/wpscan/wpscan.rb" ]; then
-    WPSCAN_CMD="ruby /opt/wpscan/wpscan.rb"
 elif [ -f "/usr/local/bin/wpscan" ]; then
     WPSCAN_CMD="/usr/local/bin/wpscan"
+elif [ -f "/opt/wpscan/bin/wpscan" ]; then
+    WPSCAN_CMD="/opt/wpscan/bin/wpscan"
 else
-    echo "Error: WPScan binary not found. Please install wpscan."
+    echo "Error: WPScan binary not found"
     exit 1
 fi
 
-# Run WPScan with the provided URL and API token
 $WPSCAN_CMD --url "$URL" \
     --api-token "$WPSCAN_TOKEN" \
     --enumerate vp,vt,u,cb,dbe \

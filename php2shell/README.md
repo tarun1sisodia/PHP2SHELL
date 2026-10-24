@@ -61,7 +61,7 @@ pip install -r requirements.txt
 ## Installation
 
 ```bash
-git clone https://github.com/your-repo/php2shell.git
+git clone https://github.com/tarun1sisodia/php2shell.git
 cd php2shell
 pip install -r requirements.txt
 ```
