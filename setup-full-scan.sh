@@ -60,10 +60,27 @@ fi
 # Install ffuf
 echo -e "${YELLOW}Installing ffuf...${NC}"
 if ! command_exists ffuf; then
-    FFUF_VERSION="v2.2.0"
-    curl -sL "https://github.com/ffuf/ffuf/releases/download/${FFUF_VERSION}/ffuf_${FFUF_VERSION}_linux_amd64.tar.gz" | sudo tar xz -C /usr/local/bin
-    sudo chmod +x /usr/local/bin/ffuf
-    echo -e "${GREEN}ffuf installed successfully!${NC}"
+    if sudo apt install -y ffuf 2>/dev/null && command_exists ffuf; then
+        echo -e "${GREEN}ffuf installed successfully via apt!${NC}"
+    else
+        ARCH_RAW="$(uname -m)"
+        case "$ARCH_RAW" in
+            x86_64) FFUF_ARCH="amd64" ;;
+            aarch64|arm64) FFUF_ARCH="arm64" ;;
+            *) FFUF_ARCH="amd64" ;;
+        esac
+        FFUF_VERSION="2.3.0"
+        TMP_DIR=$(mktemp -d)
+        if curl -fSL "https://github.com/ffuf/ffuf/releases/download/v${FFUF_VERSION}/ffuf_${FFUF_VERSION}_linux_${FFUF_ARCH}.tar.gz" -o "$TMP_DIR/ffuf.tar.gz" 2>/dev/null; then
+            tar -xzf "$TMP_DIR/ffuf.tar.gz" -C "$TMP_DIR" ffuf
+            sudo mv "$TMP_DIR/ffuf" /usr/local/bin/ffuf
+            sudo chmod +x /usr/local/bin/ffuf
+            echo -e "${GREEN}ffuf installed successfully!${NC}"
+        else
+            echo -e "${RED}Failed to download ffuf. Try installing manually: sudo apt install ffuf${NC}"
+        fi
+        rm -rf "$TMP_DIR"
+    fi
 else
     echo -e "${YELLOW}ffuf already installed${NC}"
 fi
@@ -103,7 +120,19 @@ if [ -z "$URL" ]; then
     exit 1
 fi
 
-ruby /opt/wpscan/wpscan.rb --url "$URL" \
+WPSCAN_CMD=""
+if command -v wpscan &>/dev/null; then
+    WPSCAN_CMD="wpscan"
+elif [ -f "/opt/wpscan/wpscan.rb" ]; then
+    WPSCAN_CMD="ruby /opt/wpscan/wpscan.rb"
+elif [ -f "/usr/local/bin/wpscan" ]; then
+    WPSCAN_CMD="/usr/local/bin/wpscan"
+else
+    echo "Error: WPScan binary not found"
+    exit 1
+fi
+
+$WPSCAN_CMD --url "$URL" \
     --api-token "$WPSCAN_TOKEN" \
     --enumerate vp,vt,u,cb,dbe \
     --plugins-detection aggressive \
@@ -204,13 +233,7 @@ echo ""
 
 # WPScan
 echo "[2/3] Running WPScan..."
-ruby /opt/wpscan/wpscan.rb --url "$T" \
-    --api-token "$WPSCAN_TOKEN" \
-    --enumerate vp,vt,u,cb,dbe \
-    --plugins-detection aggressive \
-    --plugins-version-detection aggressive \
-    -f cli-no-color \
-    -o "wpscan_$(date +%Y%m%d_%H%M%S).txt"
+./wpscan-wrapper.sh "$T" || true
 echo ""
 
 # Directory fuzzer
